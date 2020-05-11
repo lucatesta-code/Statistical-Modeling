@@ -1,0 +1,294 @@
+---
+title: "Esame_Scritto_27/04/2020"
+author: "Luca Testa 816000"
+date: "27/4/2020"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)
+library(car)
+library(sjstats)
+library(plotrix)
+library(sjPlot)
+library(sjmisc)
+library(lme4)
+library(pander)
+library(car)
+library(olsrr)
+library(systemfit)
+library(het.test)
+library(ppcor)
+library(snakecase)
+library(performance)
+library(glmmTMB)
+
+panderOptions('knitr.auto.asis', FALSE)
+
+#-- White test function
+white.test <- function(lmod,data=d){
+  u2 <- lmod$residuals^2
+  y <- fitted(lmod)
+  Ru2 <- summary(lm(u2 ~ y + I(y^2)))$r.squared
+  LM <- nrow(data)*Ru2
+  p.value <- 1-pchisq(LM, 2)
+  data.frame("Test statistic"=LM,"P value"=p.value)
+}
+
+# funzione per ottenere osservazioni outlier univariate
+FIND_EXTREME_OBSERVARION <- function(x,sd_factor=2){
+  which(x>mean(x)+sd_factor*sd(x) | x<mean(x)-sd_factor*sd(x))
+}
+
+# import del dataset
+d <- read_delim("C:/Users/lucat/Desktop/PISA_USA.csv", 
+    ";", escape_double = FALSE, trim_ws = TRUE)
+
+# vista delle prima 6 righe del dataset
+head(d)
+
+# controllo tipo di ogni colonna del dataset
+str(d)
+
+```
+
+```{r}
+#-- vettore di variabili numeriche presenti nei dati per attuare statistiche descrittive
+VAR_NUMERIC <- c("JOYREAD","SOCIO_ECONOMIC_STATUS","AGE","SCHOOL_SELECTIVITY")
+
+#-- STATISTICHE DESCRITTIVE
+
+# Si propongono la matrice di correlazione tra le variabili e alcune descrittive di base.
+
+# Qui posso notare come le variabili sembrano essere tutte quasi simmetriche
+summary(d[,VAR_NUMERIC])
+
+# Non sembrano esserci correlazioni di nessun tipo, tutti i valori sono molto bassi
+# Niente fa presagire che ci siano delle variabili collineari tra di loro, ovvero che
+# due o più varibili siano correlate tra di loro andando a formare una matrice X'X singolare
+# La cosa, appunto, è esclusa
+cor(d[,VAR_NUMERIC])
+
+# Le variabili sembrano essere tutte molto vicine alla simmetria, soltanto le prime due hanno una coda
+# più pesante a destra e a sinistra e segnalano la presenza di outlier
+par(mfrow=c(2,2))
+for(i in VAR_NUMERIC){
+  boxplot(d[,i],main=i,col="lightblue",ylab=i)
+}
+
+
+```
+
+```{r}
+# REGRESSIONE
+# Si utilizzano come variabili esplicative rispetto a JOYREAD: SOCIO_ECONOMIC_STATUS + AGE + SCHOOL_SELECTIVITY.
+
+#-- R CODE
+# Stima modello lineare semplice
+mod1 <- lm(JOYREAD ~ SOCIO_ECONOMIC_STATUS + AGE + SCHOOL_SELECTIVITY, d) 
+
+# L'unica variabile che sembra essere significativa per questo modello è "SOCIO_ECONOMIC_STATUS".
+# Il modello ha un fitting veramente basso, quasi insignificante anche se, il p-value mostra che il modello
+# viene spiegato bene, si prosegue nei vari test.
+summary(mod1)
+
+# Il primo plot sembra segnalare una leggera eteroschedasticità dovuta alla non completa ottima distribuzione
+# dei residui. Il secondo grafico segnala che siamo in presenza di non normalità. Il terzo grafico segnala un paio di outlier non del tutti però significativi, verrà approfondita la questione tramite test ad hoc. Anche il quarto grafico sembra segnalare la presenza di leverage poco significativi.
+plot(mod1,pch=19)
+
+# Varianza multifattoriale o Vif(x_j)=1/Tol(x_j)=1/(1-R2(x_j/x_1,…, x_(j-1), x_(j+1),…, x_p)), ovvero il reciproco della tolleranza. Valori di tale indice variano tra 0 e 1 perciò se superiori a 20 indicano uno stretto rapporto tra la variabile considerata e le altre ovvero un eccessivo grado di multicollinearità. Anche oltre 10 andrebbero controllate
+# In questo modello non ne viene però segnalata la presenza.
+ols_vif_tol(mod1)
+
+# Questo test si basa sull’assunzione di omoschedasticità  dei residui, viene perciò definita l’ipotesi nulla come H0 : # Var(ei) = (o2) e l’ipotesi alternativa come H1 : Var(ei) = ( oi2). Il test sfrutta la regressione OLS del quadrato dei # residui ei2 sui regressori xj, i regressori al quadrato xj2e le loro interazioni. 
+# Con un valore pari a 0.08 possiamo dire di avere una leggera eteroschedasticità da migliorare tramite una stima WLS, per essere sicuri dell'omoschedasticità, come segnalato durante le lezioni, il valore dev'essere superiore o uguale a 0.1.
+white.test(mod1)
+
+# L’ipotesi nulla è: H_0:ρ=Corr[ε_i^#, ε_(i-1)^#]=0
+# Con valori della statistica compresi tra 1 e 3 si può dire di avere incorrelazione.
+# Nel caso di autocorrelazione, il teorema di Aitken stabilisce che nella classe degli stimatori lineari per il modello # di regressione generalizzato lo stimatore GLS è efficiente in quanto caratterizzato dalla minima varianza.
+# Il valore di 1.9486 ci segnala la presenza di incorrelazione tra i residui.
+dwtest(mod1)
+
+# I test seguenti sono stati fatti per vedere la quantità di outlier presenti all'interno del modello.
+# I grafici sottolineano un'elevata presenza di outlier.
+# Residui studentizzati: è la versione dei residui standardizzati ma relativamente al campione. Di conseguenza le forme analitiche saranno le medesime facendo però riferimento non alla varianza o2 ma alla varianza campionaria s2.
+{plot(fitted(mod1),rstudent(mod1), pch=19, xlab="Predicted", ylab="Student - Residual")
+abline(h=-2,col=2,lty=2,lwd=2)
+abline(h=2,col=2,lty=2,lwd=2)}
+
+# Misura l’influenza dell’i-esima osservazione sulla stima dei coefficienti di regressione nel loro complesso, in termini di capacità del modello di predire tutti i casi quando la singola osservazione viene rimossa dal dataset. Valori superiori a 1 (o eventualmente a 4/n, essendo n il numero di osservazioni) indicano che il punto è influente.
+{plot(cooks.distance(mod1), pch=19, xlab="Observation Index", ylab="Cook DIstance", type="h")
+points(cooks.distance(mod1), pch=19)
+abline(h=4/nrow(d), col=2, lty=2, lwd=2)}
+
+influenceIndexPlot(mod1)
+
+
+```
+
+```{r}
+# REGRESSIONE MULTILEVEL: Empty Model
+
+# Modello ANOVA ad effetti casuali (empty model)
+# Modello
+mod2 <- lmer(JOYREAD ~ (1 | SCHOOLID), d, REML=T)
+summary(mod2)
+
+mod1_null <- lm(JOYREAD ~ 1, d)
+anova(mod2, mod1_null)
+
+performance::icc(mod2)
+
+res <- plot_model(mod2, type = "re", grid = FALSE, show.values=T,title="T",prnt.plot=F, sort.est ="sort.all" )
+data_1 =res$data[order(res$data$estimate),]
+{plotCI(1:nrow(data_1),data_1$estimate,ui=data_1$conf.high, li=data_1$conf.low ,pch=19,scol="blue",xlab="School",ylab="Estimate")
+abline(h=mean(data_1$estimate),col=2,lwd=3,lty=2)}
+
+# E' respinta l'ipotesi che il modello non interpreti i dati e dal rapporto tra varianza spiegata e totale si ricava
+# un coefficiente intraclasse pari a 0.03 che è molto basso, e segnala una bassa variabilità fra le scuole nei punteggi
+# di JOYREAD. Si propongono poi i valori attesi e gli intervalli di confidenza dei parametri casuali inerenti le
+# singole scuole. Per i parametri casuali il modello postula graduatorie basate su valori attesi e intervalli di
+# confidenza.
+# Come è noto una scuola A può ritenersi superiore a una scuola B in termini di efficacia solo se l'estremo
+# inferiore dell'intervallo di confidenza di A sia superiore all'estremo superiore dell'intervallo di confidenza di B.
+# Dal grafico posso anche affermare che ci sono poche scuole significativamente diverse da 0, cioè che, non hanno nel loro intervallo di confidenza appunto lo 0.
+
+# Modello ANOVA ad effetti casuali detto anche empty model: yij=𝛌00+vj+εij; εij ∼ N(0, σ2); vj ∼ N(0, τ2 )
+# In questo caso la variabile dipendente y dipende dagli effetti casuali:
+# 1) a livello di gruppo, Vj, distribuiti in modo normale N(𝛌00; τ2)
+# 2) a livello individuale, dai residui Rij, distribuiti in modo normale N(0; σ2)
+
+
+```
+
+```{r}
+# REGRESSIONE MULTILEVEL: Random Intercept
+# MOdello empty al quale si inserisce una variabile esplicativa  (random  intercept model -  mixed model) 
+# Multilevel perchè tiene conto sia della parte di regressione che di analisi della varianza ed è la sintesi dei modelli empty e OLS
+
+#-- R CODE
+mod3 <- lmer(JOYREAD ~ SOCIO_ECONOMIC_STATUS + (1 | SCHOOLID), d, REML=T)
+summary(mod3)
+
+Anova(mod3, type="III")
+
+performance::icc(mod3)
+
+res <- plot_model(mod3, type = "re", grid = FALSE, show.values=T,title="T",prnt.plot=F, sort.est ="sort.all" )
+data_1 =res$data[order(res$data$estimate),]
+{plotCI(1:nrow(data_1),data_1$estimate,ui=data_1$conf.high, li=data_1$conf.low ,pch=19,scol="blue",xlab="School",ylab="Estimate")
+abline(h=mean(data_1$estimate),col=2,lwd=3,lty=2)}
+
+# Il coefficiente di correlazione intraclasse si abbassa di pochissimo (0.027), rimanendo veramente basso, in quanto si abbassano in uguale proporzione varianza spiegata e residua. Il modello interpreta bene i dati e la variabile SOCIO_ECONOMIC_STATUS risulta significativa. Anche il test di 3° tipo degli effetti fissi conferma questa significatività. Si propongono i valori attesi e gli intervalli di confidenza dei parametri casuali inerenti i gruppi. Si vede come il ranking non muti in modo rilevante al caso empty. Ciò mostra che la diversa distribuzione fra le scuole della variabile SOCIO_ECONOMIC_STATUS non è all'origine di parte della variabilità di "JOYREAD" attribuito in prima istanza nel modello empty alla efficacia delle scuole.
+
+# yij = 𝛌 00 +β1xij+ vj+ εij; εij ∼ N(0, σ2);             
+# Dove vj è la determinazione della variabile casuale Vj distribuita normalmente N(𝛌00; τ2) a rappresentazione dei residui di secondo livello. Essi sono indipendenti e quindi incorrelati con i residui di primo livello εij determinazioni della variabile casuale normalmente distribuita Eij ~ N(0; σ2)
+
+```
+
+```{r}
+# 2° REGRESSIONE MULTILEVEL
+
+mod4 <- lmer(JOYREAD ~ SOCIO_ECONOMIC_STATUS + AGE + (1 | SCHOOLID), d, REML=T)
+summary(mod4)
+
+Anova(mod4, type="III")
+
+performance::icc(mod4)
+
+res <- plot_model(mod4, type = "re", grid = FALSE, show.values=T,title="T",prnt.plot=F, sort.est ="sort.all" )
+data_1 =res$data[order(res$data$estimate),]
+{plotCI(1:nrow(data_1),data_1$estimate,ui=data_1$conf.high, li=data_1$conf.low ,pch=19,scol="blue",xlab="School",ylab="Estimate")
+abline(h=mean(data_1$estimate),col=2,lwd=3,lty=2)}
+
+# Il coefficiente di correlazione intraclasse si abbassa di pochissimo ancora (0.026). Il modello interpreta bene i dati e la variabile SOCIO_ECONOMIC_STATUS risulta significativa mentre la variabile AGE no con un valore di Chisq veramente basso, questo vuol dire che non "ruba" parte della variabilità. Si propongono i valori attesi e gli intervalli di confidenza dei parametri casuali inerenti i gruppi. Si vede come il ranking non muti in modo rilevante, anzi, peggiori.
+
+```
+
+
+```{r}
+# 3° REGRESSIONE MULTILEVEL
+# 2 variabili di primo livello e 1 variabile di secondo 2 livello
+
+#-- RIMUOVO L'OUTLIER -999
+summary(d$STUDENT_TEACHER_RATIO)
+d1 <- -d[!(d$STUDENT_TEACHER_RATIO == -999),]
+
+mod5 <- lmer(JOYREAD ~ SOCIO_ECONOMIC_STATUS + AGE + STUDENT_TEACHER_RATIO + (1 | SCHOOLID), d1, REML=T)
+summary(mod5)
+
+Anova(mod5, type="III")
+
+performance::icc(mod5)
+
+res <- plot_model(mod5, type = "re", grid = FALSE, show.values=T,title="T",prnt.plot=F, sort.est ="sort.all" )
+data_1 =res$data[order(res$data$estimate),]
+{plotCI(1:nrow(data_1),data_1$estimate,ui=data_1$conf.high, li=data_1$conf.low ,pch=19,scol="blue",xlab="School",ylab="Estimate")
+abline(h=mean(data_1$estimate),col=2,lwd=3,lty=2)}
+
+
+
+# Il coefficiente di correlazione intraclasse rimane invariato (0.027), rimanendo veramente basso, in quanto si abbassano in uguale proporzione varianza spiegata e residua. Il modello interpreta bene i dati e la variabile SOCIO_ECONOMIC_STATUS risulta significativa, AGE no e nemmeno la variabile di secondo livello. Entrambe non catturano parte della variabilità.Si propongono i valori attesi e gli intervalli di confidenza dei parametri casuali inerenti i gruppi. Si vede come il ranking non muti in modo rilevante e come non sia possibile comunque stilare un ranking.
+```
+
+
+```{r}
+# REGRESSIONE MULTILEVEL: Random Slope
+# Questo modello prevede che i coefficienti della regressione varino da gruppo a gruppo 
+
+mod6 <- lmer(JOYREAD ~ 1 + (SOCIO_ECONOMIC_STATUS| SCHOOLID), d, REML=T)
+summary(mod6)
+
+Anova(mod6, type="III")
+
+
+res <- plot_model(mod6, type = "re", grid = FALSE, show.values=T,title="T",prnt.plot=F, sort.est ="sort.all" )
+
+
+data_coef = res[[1]]$data[order(res[[1]]$data$estimate),]
+data_int  = res[[2]]$data[order(res[[2]]$data$estimate),]
+
+
+{plotCI(1:nrow(data_coef),data_coef$estimate,ui=data_coef$conf.high, li=data_coef$conf.low ,pch=19,scol="blue",xlab="Group1",ylab="Estimate")
+abline(h=mean(data_coef$estimate),col=2,lwd=3,lty=2)}
+
+{plotCI(1:nrow(data_int),data_int$estimate,ui=data_int$conf.high, li=data_int$conf.low ,pch=19,scol="red",xlab="Group2",ylab="Estimate")
+abline(h=mean(data_int$estimate),col=2,lwd=3,lty=2)}
+
+# Il coefficiente intraclasse non può più essere calcolato nel modo semplice precedente perché si deve tener
+# conto della correlazione tra effetti casuali relativi a "JOYREAD" e alle scuole nel loro complesso. Gli effetti
+# casuali complessivi relativi all'efficacia delle scuole nel loro complesso e "JOYREAD" sono significativi. La correlazione tra effetti relativi alle scuole e a "JOYREAD" è leggermente positiva.
+# Sia per il coefficiente che per l'intercetta non possiamo stilare un ranking vero e proprio in quanto non siamo in presenza di differenza significativamente diverse fra le scuole.
+# Sono poche quelle (come la 157) ad essere significativamente diverse da 0.
+
+# Dato il modello random intercept si può proporre il modello random slope (total effects): yij=𝛌00+β1j* xij +vj+εij=yij=𝛌00+(β1j 0+β1j)xij+vj+εij ove i coefficiente β1j  (j=1,…,p) variano da gruppo a gruppo poiché l’effetto di X su Y è diverso nei diversi gruppi. 
+# In questo caso non si è in presenza di un total effects.
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
